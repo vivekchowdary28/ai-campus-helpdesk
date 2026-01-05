@@ -1,0 +1,1 @@
+const String collegeDomain = '@iitbhilai.ac.in';

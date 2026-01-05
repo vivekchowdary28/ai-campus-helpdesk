@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../utils/validators.dart';
+import '../services/otp_auth_service.dart';
 import 'otp_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -10,18 +10,24 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _emailController = TextEditingController();
-  String? error;
+  final _emailController = TextEditingController();
+  final _otpService = OtpAuthService();
 
-  void sendOtp() {
+  bool _loading = false;
+
+  void _sendOtp() async {
     final email = _emailController.text.trim();
 
-    if (!isValidCollegeEmail(email)) {
-      setState(() {
-        error = 'Use your IIT Bhilai email only';
-      });
+    if (!email.endsWith('@iitbhilai.ac.in')) {
+      _show('Use IIT Bhilai email only');
       return;
     }
+
+    setState(() => _loading = true);
+
+    await _otpService.sendOtp(email);
+
+    setState(() => _loading = false);
 
     Navigator.push(
       context,
@@ -31,6 +37,11 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  void _show(String msg) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -38,18 +49,29 @@ class _LoginScreenState extends State<LoginScreen> {
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            const Text(
+              'Login with College Email',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
             TextField(
               controller: _emailController,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'College Email',
-                errorText: error,
+                border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: sendOtp,
-              child: const Text('Send OTP'),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _sendOtp,
+                child: _loading
+                    ? const CircularProgressIndicator()
+                    : const Text('Send OTP'),
+              ),
             ),
           ],
         ),
