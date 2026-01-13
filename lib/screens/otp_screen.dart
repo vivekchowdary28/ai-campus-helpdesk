@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/otp_auth_service.dart';
-import 'home_screen.dart';
+import 'student_home_screen.dart';
+import 'admin_home_screen.dart';
+
 
 class OtpScreen extends StatefulWidget {
   final String email;
@@ -29,16 +31,24 @@ class _OtpScreenState extends State<OtpScreen> {
     if (!mounted) return;
 
     if (ok) {
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const HomeScreen(role: 'student'),
-        ),
-        (_) => false,
-      );
-    } else {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Invalid OTP')));
+       // Logic to choose the screen based on the email
+      Widget nextScreen;
+      String email = widget.email.trim().toLowerCase();
+
+       if (email == 'admin@iitbhilai.ac.in') {
+          nextScreen = const AdminHomeScreen();
+       } else {
+          nextScreen = StudentHomeScreen(email: widget.email); // Removed const
+       }
+
+       Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => nextScreen),
+          (_) => false,
+         );
+        } else {
+             ScaffoldMessenger.of(context)
+               .showSnackBar(const SnackBar(content: Text('Invalid OTP')));
     }
   }
 
