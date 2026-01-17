@@ -8,10 +8,14 @@ import 'screens/loading_screen.dart';
 import 'screens/student_home_screen.dart';
 import 'screens/admin_home_screen.dart';
 import 'screens/student_chat_screen.dart';
+import 'screens/splash_screen.dart';
 
-Future<void> main() async {
+
+void main() async {
+  // 1. Ensure Flutter bindings are initialized
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 2. Initialize Firebase with platform-specific options
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
@@ -25,31 +29,26 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      title: 'IIT Bhilai Campus Assist',
       debugShowCheckedModeBanner: false,
-      home: FutureBuilder<SharedPreferences>(
-        future: SharedPreferences.getInstance(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const LoadingScreen();
-          }
-
-          final prefs = snapshot.data!;
-          final savedEmail = prefs.getString('signed_in_email');
-
-          // 1️⃣ No session → Login
-          if (savedEmail == null || savedEmail.isEmpty) {
-            return const LoginScreen();
-          }
-
-          // 2️⃣ Session exists → route by email ONLY
-          final email = savedEmail.trim().toLowerCase();
-          final isAdmin = email == 'admin@iitbhilai.ac.in';
-
-          return isAdmin
-              ? const AdminHomeScreen()
-              : StudentHomeScreen(email: email);
-        },
+      
+      // Professional Theme Configuration
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF1E293B), // Navy Blue
+          primary: const Color(0xFF2563EB),   // Royal Blue
+        ),
+        useMaterial3: true,
+        // Set a default font if you have one, or stick to system fonts
+        fontFamily: 'Roboto', 
       ),
+
+      // The app now starts with the Splash Screen
+      // The Splash Screen handles the logic of checking if a user is already signed in
+      home: const SplashScreen(),
+      
+      // Define routes if you want to use Navigator.pushNamed, 
+      // otherwise, we use MaterialPageRoute as we have been doing.
     );
   }
 }

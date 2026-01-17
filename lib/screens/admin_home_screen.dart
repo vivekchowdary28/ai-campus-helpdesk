@@ -1,312 +1,138 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'login_screen.dart';
 
 class AdminHomeScreen extends StatefulWidget {
-  const AdminHomeScreen({super.key});
+  final String email;
+  const AdminHomeScreen({super.key, required this.email});
 
   @override
   State<AdminHomeScreen> createState() => _AdminHomeScreenState();
 }
 
-class _AdminHomeScreenState extends State<AdminHomeScreen> {
-  int _currentIndex = 0;
+class _AdminHomeScreenState extends State<AdminHomeScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
 
-  // ================= LOGOUT =================
-  Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('signed_in_email');
-    await FirebaseAuth.instance.signOut();
-    if (!mounted) return;
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
 
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
-      (_) => false,
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
+      appBar: AppBar(
+        title: const Text("ADMIN COMMAND CENTER", style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+        backgroundColor: const Color(0xFF0F172A),
+        foregroundColor: Colors.white,
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: Colors.blueAccent,
+          tabs: const [
+            Tab(text: "PENDING (Human Action Required)"),
+            Tab(text: "VERIFIED KNOWLEDGE"),
+          ],
+        ),
+        actions: [
+          IconButton(icon: const Icon(Icons.logout), onPressed: () async {
+            await FirebaseAuth.instance.signOut();
+            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+          })
+        ],
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildQuestionList('pending'),
+          _buildQuestionList('answered'),
+        ],
+      ),
     );
   }
 
-  // ================= FLAGGED / PENDING =================
-  Widget _buildPendingQueries() {
+  Widget _buildQuestionList(String status) {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('questions')
-          .where('status', isEqualTo: 'pending')
-          .orderBy('createdAt', descending: true)
-          .snapshots(),
+      stream: FirebaseFirestore.instance.collection('questions').where('status', isEqualTo: status).snapshots(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
         final docs = snapshot.data!.docs;
-
-        if (docs.isEmpty) {
-          return const Center(child: Text('No pending questions'));
-        }
+        if (docs.isEmpty) return Center(child: Text("No $status queries found.", style: const TextStyle(color: Colors.grey)));
 
         return ListView.builder(
+          padding: const EdgeInsets.all(16),
           itemCount: docs.length,
-          itemBuilder: (context, index) {
-            final doc = docs[index];
-            final data = doc.data() as Map<String, dynamic>;
-
-            return ListTile(
-              title: Text(data['question'] ?? ''),
-              subtitle: Text('From: ${data['studentEmail'] ?? ''}'),
-              trailing: ElevatedButton(
-                onPressed: () => _showAnswerDialog(doc),
-                child: const Text('Answer'),
-              ),
-            );
+          itemBuilder: (context, i) {
+            final data = docs[i].data() as Map<String, dynamic>;
+            return _buildQuestionCard(docs[i].id, data);
           },
         );
       },
     );
   }
 
-  // ================= ANSWER DIALOG =================
-  void _showAnswerDialog(DocumentSnapshot doc) {
-    final answerController = TextEditingController();
-    String category = 'FAQ';
-    final data = doc.data() as Map<String, dynamic>;
+  Widget _buildQuestionCard(String id, Map<String, dynamic> data) {
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const CircleAvatar(backgroundColor: Color(0xFFE2E8F0), child: Icon(Icons.person, size: 20, color: Colors.black54)),
+                const SizedBox(width: 10),
+                Text(data['studentEmail'] ?? "Unknown Student", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(data['question'] ?? "", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const Divider(height: 30),
+            if (data['status'] == 'pending')
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 45)),
+                onPressed: () => _showAnswerDialog(id, data['question']),
+                icon: const Icon(Icons.edit),
+                label: const Text("PROVIDE OFFICIAL ANSWER"),
+              )
+            else
+              Text("AI/Admin Answer: ${data['answer']}", style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
 
+  void _showAnswerDialog(String id, String question) {
+    final TextEditingController ansController = TextEditingController();
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Answer Question'),
-        content: SingleChildScrollView(
-          child: Column(
-            children: [
-              Text(data['question'] ?? ''),
-              const SizedBox(height: 12),
-              TextField(
-                controller: answerController,
-                minLines: 3,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  labelText: 'Official Answer',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              DropdownButton<String>(
-                value: category,
-                isExpanded: true,
-                items: const ['Rule', 'Policy', 'Notice', 'FAQ']
-                    .map(
-                      (e) => DropdownMenuItem(
-                        value: e,
-                        child: Text(e),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (v) => category = v!,
-              ),
-            ],
-          ),
-        ),
+      builder: (context) => AlertDialog(
+        title: const Text("Train Knowledge Base"),
+        content: TextField(controller: ansController, maxLines: 5, decoration: const InputDecoration(hintText: "Enter official response...")),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
           ElevatedButton(
             onPressed: () async {
-              final answer = answerController.text.trim();
-              if (answer.isEmpty) return;
-
-              // update question
-              await FirebaseFirestore.instance
-                  .collection('questions')
-                  .doc(doc.id)
-                  .update({
-                'answer': answer,
+              await FirebaseFirestore.instance.collection('questions').doc(id).update({
+                'answer': ansController.text,
                 'status': 'answered',
-                'answeredAt': FieldValue.serverTimestamp(),
               });
-
-              // add to official data
-              await FirebaseFirestore.instance
-                  .collection('official_data')
-                  .add({
-                'question': data['question'],
-                'answer': answer,
-                'category': category,
-                'createdAt': FieldValue.serverTimestamp(),
+              // ALSO ADD TO THE TRAINING VAULT
+              await FirebaseFirestore.instance.collection('official_data').add({
+                'question': question,
+                'answer': ansController.text,
+                'verifiedAt': FieldValue.serverTimestamp(),
               });
-
-              if (mounted) Navigator.pop(context);
+              Navigator.pop(context);
             },
-            child: const Text('Publish'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ================= ANSWERED =================
-  Widget _buildAnsweredQueries() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('questions')
-          .where('status', isEqualTo: 'answered')
-          .orderBy('answeredAt', descending: true)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final docs = snapshot.data!.docs;
-
-        if (docs.isEmpty) {
-          return const Center(child: Text('No answered questions'));
-        }
-
-        return ListView(
-          children: docs.map((doc) {
-            final data = doc.data() as Map<String, dynamic>;
-            return ListTile(
-              title: Text(data['question'] ?? ''),
-              subtitle: Text(data['answer'] ?? ''),
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
-
-  // ================= OFFICIAL DATA =================
-  Widget _buildOfficialData() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('official_data')
-          .orderBy('createdAt', descending: true)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final docs = snapshot.data!.docs;
-
-        if (docs.isEmpty) {
-          return const Center(child: Text('No official data'));
-        }
-
-        return ListView(
-          children: docs.map((doc) {
-            final data = doc.data() as Map<String, dynamic>;
-            return ListTile(
-              title: Text(data['question'] ?? ''),
-              subtitle: Text(data['answer'] ?? ''),
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
-
-  // ================= ADD OFFICIAL DATA =================
-  void _addOfficialDataManually() {
-    final q = TextEditingController();
-    final a = TextEditingController();
-    String category = 'FAQ';
-
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Add Official Data'),
-        content: SingleChildScrollView(
-          child: Column(
-            children: [
-              TextField(
-                controller: q,
-                decoration: const InputDecoration(labelText: 'Question'),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: a,
-                minLines: 3,
-                maxLines: 6,
-                decoration: const InputDecoration(labelText: 'Answer'),
-              ),
-              const SizedBox(height: 8),
-              DropdownButton<String>(
-                value: category,
-                isExpanded: true,
-                items: const ['Rule', 'Policy', 'Notice', 'FAQ']
-                    .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                    .toList(),
-                onChanged: (v) => category = v!,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (q.text.trim().isEmpty || a.text.trim().isEmpty) return;
-
-              await FirebaseFirestore.instance
-                  .collection('official_data')
-                  .add({
-                'question': q.text.trim(),
-                'answer': a.text.trim(),
-                'category': category,
-                'createdAt': FieldValue.serverTimestamp(),
-              });
-
-              if (mounted) Navigator.pop(context);
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ================= BUILD =================
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Admin Dashboard'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: _logout,
-          ),
-        ],
-      ),
-
-      body: [
-        _buildPendingQueries(),
-        _buildAnsweredQueries(),
-        _buildOfficialData(),
-      ][_currentIndex],
-
-      floatingActionButton: _currentIndex == 2
-          ? FloatingActionButton(
-              onPressed: _addOfficialDataManually,
-              child: const Icon(Icons.add),
-            )
-          : null,
-
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (i) => setState(() => _currentIndex = i),
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.flag), label: 'Pending'),
-          BottomNavigationBarItem(icon: Icon(Icons.done), label: 'Answered'),
-          BottomNavigationBarItem(icon: Icon(Icons.storage), label: 'Official'),
+            child: const Text("Verify & Publish"),
+          )
         ],
       ),
     );

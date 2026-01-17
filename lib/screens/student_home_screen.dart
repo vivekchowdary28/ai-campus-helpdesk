@@ -1,216 +1,265 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+import 'package:image_picker/image_picker.dart';
+import 'dart:convert';
+import '../services/ai_service.dart';
 import 'login_screen.dart';
 
-class StudentHomeScreen extends StatelessWidget {
+class StudentHomeScreen extends StatefulWidget {
   final String email;
-
   const StudentHomeScreen({super.key, required this.email});
 
-  String get initial => email.isNotEmpty ? email[0].toUpperCase() : '?';
+  @override
+  State<StudentHomeScreen> createState() => _StudentHomeScreenState();
+}
 
-  Future<void> _logout(BuildContext context) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
-    await FirebaseAuth.instance.signOut();
+class _StudentHomeScreenState extends State<StudentHomeScreen> {
+  final TextEditingController _queryController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final ImagePicker _picker = ImagePicker();
+  bool _isAITyping = false;
 
-    if (context.mounted) {
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-        (_) => false,
+  void _submitQuery({String? base64Img, String? label}) async {
+    final text = label ?? _queryController.text.trim();
+    if (text.isEmpty && base64Img == null) return;
+
+    _queryController.clear();
+    // Automatically close keyboard on send
+    FocusScope.of(context).unfocus();
+    
+    setState(() => _isAITyping = true);
+
+    try {
+      final result = await AiService.getSmartAnswer(text, base64Image: base64Img);
+      String status = result.contains("ESC_ADMIN") ? "pending" : "answered";
+
+      await FirebaseFirestore.instance.collection('questions').add({
+        'question': text,
+        'studentEmail': widget.email.trim().toLowerCase(),
+        'status': status,
+        'answer': status == "answered" ? result : null,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint("Error: $e");
+    } finally {
+      if (mounted) {
+        setState(() => _isAITyping = false);
+        _scrollToBottom();
+      }
+    }
+  }
+
+  void _scrollToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
       );
     }
+  }
+
+  void _pickImage() async {
+    final XFile? image = await _picker.pickImage(source: ImageSource.camera, imageQuality: 50);
+    if (image == null) return;
+    final bytes = await image.readAsBytes();
+    _submitQuery(base64Img: base64Encode(bytes), label: "Analyzed camera image");
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
-
-      // 🔹 APP BAR
+      // CRITICAL: This allows the UI to resize when the keyboard appears
+      resizeToAvoidBottomInset: true, 
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text(
-          'Campus Helpdesk',
-          style: TextStyle(fontWeight: FontWeight.w500),
-        ),
-        centerTitle: true,
+        title: const Text('Campus Assist', style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
-        elevation: 0,
-
-        // 🔹 PROFILE BUTTON (D)
+        foregroundColor: Colors.black,
+        elevation: 1,
         actions: [
-          Builder(
-            builder: (context) {
-              return IconButton(
-                onPressed: () {
-                  Scaffold.of(context).openEndDrawer();
-                },
-                icon: CircleAvatar(
-                  backgroundColor: Colors.green,
-                  child: Text(
-                    initial,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              );
+          IconButton(
+            icon: const Icon(Icons.logout, color: Colors.red),
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+              (await SharedPreferences.getInstance()).clear();
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
             },
-          ),
-          const SizedBox(width: 12),
+          )
         ],
       ),
-
-      // 🔹 MAIN BODY
       body: Column(
         children: [
-          const SizedBox(height: 40),
+          // THE CHAT AREA
+          Expanded(
+            child: GestureDetector(
+              onTap: () => FocusScope.of(context).unfocus(),
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('questions')
+                    .where('studentEmail', isEqualTo: widget.email.trim().toLowerCase())
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) return const Center(child: Text("Error loading messages"));
+                  if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                  
+                  final docs = snapshot.data!.docs;
+                  
+                  // Newest messages first at index 0
+                  final sortedDocs = docs.toList()..sort((a, b) {
+                    final aT = (a.data() as Map)['createdAt'] as Timestamp?;
+                    final bT = (b.data() as Map)['createdAt'] as Timestamp?;
+                    return (bT ?? Timestamp.now()).compareTo(aT ?? Timestamp.now());
+                  });
 
-          const Text(
-            ' Welcome back!👋',
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Ask any official campus-related question.',
-            style: TextStyle(color: Colors.grey),
-          ),
-
-          const SizedBox(height: 30),
-
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _QuickButton(
-                label: 'Academic query',
-                onTap: () {
-                  debugPrint('Academic query tapped');
-                },
-              ),
-              const SizedBox(width: 12),
-              _QuickButton(
-                label: 'Hostel / Admin',
-                onTap: () {
-                  debugPrint('Hostel/Admin tapped');
-                },
-              ),
-            ],
-          ),
-
-          const Spacer(),
-
-          // 🔹 INPUT BAR
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    decoration: InputDecoration(
-                      hintText: 'Type your question...',
-                      filled: true,
-                      fillColor: Colors.grey.shade100,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                CircleAvatar(
-                  radius: 24,
-                  backgroundColor: Colors.green,
-                  child: IconButton(
-                    icon: const Icon(Icons.send, color: Colors.white),
-                    onPressed: () {
-                      debugPrint('Send pressed');
+                  return ListView.builder(
+                    controller: _scrollController,
+                    reverse: true, // index 0 is at the bottom
+                    padding: const EdgeInsets.only(top: 20, bottom: 20, left: 12, right: 12),
+                    // Force it to always be scrollable even if few messages
+                    physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                    itemCount: sortedDocs.length,
+                    itemBuilder: (context, i) {
+                      final d = sortedDocs[i].data() as Map<String, dynamic>;
+                      return _buildMessage(d);
                     },
-                  ),
+                  );
+                },
+              ),
+            ),
+          ),
+
+          // LOADING INDICATOR
+          if (_isAITyping)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              width: double.infinity,
+              color: Colors.white,
+              child: const Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              ],
+              ),
+            ),
+
+          // INPUT BAR
+          _buildInputBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessage(Map<String, dynamic> data) {
+    bool isPending = data['status'] == 'pending';
+    String? answer = data['answer'];
+
+    return Column(
+      children: [
+        // Student Question Bubble
+        Align(
+          alignment: Alignment.centerRight,
+          child: Container(
+            margin: const EdgeInsets.only(left: 50, bottom: 8),
+            padding: const EdgeInsets.all(14),
+            decoration: const BoxDecoration(
+              color: Colors.blueAccent,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(20),
+                bottomLeft: Radius.circular(20),
+                topRight: Radius.circular(20),
+                bottomRight: Radius.circular(4),
+              ),
+            ),
+            child: Text(data['question'] ?? "", style: const TextStyle(color: Colors.white)),
+          ),
+        ),
+        
+        // Response (AI or Status)
+        if (answer != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Container(
+              margin: const EdgeInsets.only(right: 50, bottom: 20),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.only(
+                  topRight: Radius.circular(20),
+                  bottomRight: Radius.circular(20),
+                  topLeft: Radius.circular(20),
+                  bottomLeft: Radius.circular(4),
+                ),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
+              ),
+              child: Text(answer),
+            ),
+          )
+        else
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 20, left: 8),
+              child: Text(
+                isPending ? "⏳ Sent to Admin" : "AI is writing...",
+                style: const TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildInputBar() {
+    return Container(
+      padding: EdgeInsets.only(
+        left: 12, 
+        right: 12, 
+        top: 8, 
+        bottom: MediaQuery.of(context).padding.bottom + 8
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Color(0xFFEEEEEE))),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.camera_alt, color: Colors.blueGrey),
+            onPressed: _isAITyping ? null : _pickImage,
+          ),
+          Expanded(
+            child: TextField(
+              controller: _queryController,
+              enabled: !_isAITyping,
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _submitQuery(),
+              decoration: InputDecoration(
+                hintText: "Ask anything...",
+                filled: true,
+                fillColor: Colors.grey[100],
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: _isAITyping ? null : _submitQuery,
+            child: const CircleAvatar(
+              backgroundColor: Colors.blueAccent,
+              child: Icon(Icons.send, color: Colors.white, size: 20),
             ),
           ),
         ],
       ),
-
-      // 🔹 FULL-SCREEN RIGHT DRAWER (PROFILE)
-      endDrawer: Drawer(
-        width: MediaQuery.of(context).size.width,
-        child: SafeArea(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const SizedBox(height: 40),
-
-              CircleAvatar(
-                radius: 40,
-                backgroundColor: Colors.green,
-                child: Text(
-                  initial,
-                  style: const TextStyle(
-                    fontSize: 32,
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              const Text(
-                'Student',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-              ),
-
-              const SizedBox(height: 6),
-
-              Text(
-                email,
-                style: const TextStyle(color: Colors.grey),
-              ),
-
-              const SizedBox(height: 40),
-
-              ListTile(
-                leading: const Icon(Icons.logout, color: Colors.red),
-                title: const Text(
-                  'Logout',
-                  style: TextStyle(color: Colors.red),
-                ),
-                onTap: () => _logout(context),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _QuickButton extends StatelessWidget {
-  final String label;
-  final VoidCallback onTap;
-
-  const _QuickButton({
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return OutlinedButton(
-      onPressed: onTap,
-      style: OutlinedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-        ),
-      ),
-      child: Text(label),
     );
   }
 }
