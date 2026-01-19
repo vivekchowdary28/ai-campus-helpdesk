@@ -4,15 +4,15 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.10.4
+  sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  
+
   # AI and Networking
-  image_picker: ^1.1.2
   http: ^1.2.2
+  image_picker: ^1.1.2
   
   # Firebase
   firebase_core: ^4.3.0
@@ -22,6 +22,7 @@ dependencies:
   # Utilities
   shared_preferences: ^2.3.2
   intl: ^0.20.2
+  crypto: ^3.0.3
   cupertino_icons: ^1.0.8
 
 dev_dependencies:
@@ -31,7 +32,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-
-  # Ensure you have a folder named 'assets' with a file named 'logo.png' inside
+  
   assets:
     - assets/logo.png
