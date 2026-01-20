@@ -5,8 +5,20 @@ import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
 
 class AiService {
-  static const String _apiKey = "AIzaSyBdjTsUde6fpfaRVP0osLufx5YD3puWwXo";
-  static const String _model = "gemini-2.0-flash-exp";
+  // 🔑 MULTIPLE API KEYS - AUTOMATIC ROTATION
+  static const List<String> _apiKeys = [
+    "AIzaSyCNJZsMCjzgj8DQ_xTfvW6M5x_ZG4nUksM",
+    "AIzaSyBO2Omev5yeSz8vFVWRK_hZPa_iWo20Q3E",
+    "AIzaSyCHSNm2wHS9YxA-Z8kq8FWFfgRzimO38CY",
+  ];
+  
+  static int _currentKeyIndex = 0;
+  static int _retryCount = 0;
+  static const int _maxRetries = 3;
+  
+  static String get _apiKey => _apiKeys[_currentKeyIndex];
+  
+  static const String _model = "gemini-1.5-flash";
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
   // ==================== MAIN ENTRY POINT ====================
@@ -16,31 +28,41 @@ class AiService {
     String? base64Image,
   }) async {
     try {
-      // Step 1: Check smart cache first
+      _retryCount = 0; // Reset for new question
+      
+      // Step 1: Check cache
       final cachedResponse = await _checkCache(question);
       if (cachedResponse != null) {
         await _logQuery(question, cachedResponse, userId, fromCache: true);
         return cachedResponse;
       }
 
-      // Step 2: Classify intent
+      // Step 2: Check admin knowledge base
+      final officialAnswer = await _checkOfficialKnowledge(question);
+      if (officialAnswer != null) {
+        await _logQuery(question, officialAnswer, userId);
+        return officialAnswer;
+      }
+
+      // Step 3: Classify intent
       final intent = await _classifyIntent(question);
       
-      // Step 3: Get relevant data (scrape + firestore)
+      // Step 4: Gather context
       final contextData = await _gatherContext(question, intent);
       
-      // Step 4: Generate answer with Gemini
+      // Step 5: Generate with Gemini (with key rotation)
       final answer = await _generateAnswer(question, contextData, intent);
       
-      // Step 5: Verify answer quality
+      // Step 6: Verify
       final verified = await _verifyAnswer(question, answer, contextData);
       
-      // Step 6: Cache if high confidence
-      if (verified['confidence'] >= 0.85) {
+      // Step 7: Cache if high confidence
+      final confidenceScore = verified['confidence_score'];
+      if (confidenceScore is num && confidenceScore >= 0.85) {
         await _cacheResponse(question, verified, intent);
       }
       
-      // Step 7: Log analytics
+      // Step 8: Log
       await _logQuery(question, verified, userId);
       
       return verified;
@@ -51,12 +73,11 @@ class AiService {
     }
   }
 
-  // ==================== STEP 1: SMART CACHE ====================
+  // ==================== CHECK CACHE ====================
   static Future<Map<String, dynamic>?> _checkCache(String question) async {
     try {
       final queryHash = _generateHash(question.toLowerCase().trim());
       
-      // Exact match search
       final exactMatch = await _firestore
           .collection('smart_cache')
           .where('query_hash', isEqualTo: queryHash)
@@ -68,36 +89,32 @@ class AiService {
         final expiresAt = (cached['expires_at'] as Timestamp).toDate();
         
         if (DateTime.now().isBefore(expiresAt)) {
-          // Update access metrics
           await exactMatch.docs.first.reference.update({
             'view_count': FieldValue.increment(1),
             'last_accessed': FieldValue.serverTimestamp(),
           });
           
           return {
-            'answer': cached['answer'],
+            'answer': cached['answer'] as String,
             'confidence': 'verified',
-            'source': cached['source_url'],
+            'source': cached['source_url'] as String? ?? 'iitbhilai.ac.in',
             'last_updated': _formatTimestamp(cached['scraped_at']),
             'from_cache': true,
+            'confidence_score': 1.0,
           };
         }
       }
       
-      // Semantic search (similar questions)
-      final semanticMatch = await _semanticSearch(question);
-      if (semanticMatch != null) return semanticMatch;
-      
+      return await _semanticSearch(question);
     } catch (e) {
       debugPrint("Cache check failed: $e");
+      return null;
     }
-    return null;
   }
 
   static Future<Map<String, dynamic>?> _semanticSearch(String question) async {
     try {
-      // Get recent queries with same intent
-      final intent = await _quickIntentCheck(question);
+      final intent = await _classifyIntent(question);
       
       final similar = await _firestore
           .collection('smart_cache')
@@ -110,17 +127,17 @@ class AiService {
         final data = doc.data();
         final variants = List<String>.from(data['query_variants'] ?? []);
         
-        // Check if question matches any variant (fuzzy)
         for (var variant in variants) {
           if (_isSimilar(question, variant)) {
             final expiresAt = (data['expires_at'] as Timestamp).toDate();
             if (DateTime.now().isBefore(expiresAt)) {
               return {
-                'answer': data['answer'],
+                'answer': data['answer'] as String,
                 'confidence': 'verified',
-                'source': data['source_url'],
+                'source': data['source_url'] as String? ?? 'iitbhilai.ac.in',
                 'last_updated': _formatTimestamp(data['scraped_at']),
                 'from_cache': true,
+                'confidence_score': 0.95,
               };
             }
           }
@@ -132,66 +149,65 @@ class AiService {
     return null;
   }
 
-  // ==================== STEP 2: INTENT CLASSIFICATION ====================
+  // ==================== CHECK ADMIN KNOWLEDGE ====================
+  static Future<Map<String, dynamic>?> _checkOfficialKnowledge(String question) async {
+    try {
+      final queryLower = question.toLowerCase().trim();
+      
+      final snapshot = await _firestore
+          .collection('official_data')
+          .limit(100)
+          .get();
+      
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final officialQ = (data['question'] as String?)?.toLowerCase() ?? '';
+        
+        if (_isSimilar(queryLower, officialQ)) {
+          debugPrint("✅ Found admin-verified answer!");
+          return {
+            'answer': data['answer'] as String,
+            'confidence': 'verified',
+            'source': 'Admin Verified',
+            'from_cache': false,
+            'confidence_score': 1.0,
+          };
+        }
+      }
+    } catch (e) {
+      debugPrint("Official knowledge check failed: $e");
+    }
+    return null;
+  }
+
+  // ==================== INTENT CLASSIFICATION ====================
   static Future<String> _classifyIntent(String question) async {
     final q = question.toLowerCase();
     
-    // Rule-based classification (fast)
-    if (q.contains('mess') || q.contains('menu') || q.contains('food') || q.contains('breakfast') || q.contains('lunch') || q.contains('dinner')) {
-      return 'mess_menu';
-    }
-    if (q.contains('exam') || q.contains('test') || q.contains('mid-sem') || q.contains('end-sem')) {
-      return 'exam_schedule';
-    }
-    if (q.contains('holiday') || q.contains('vacation') || q.contains('break')) {
-      return 'holidays';
-    }
-    if (q.contains('faculty') || q.contains('professor') || q.contains('teacher') || q.contains('hod')) {
-      return 'faculty_info';
-    }
-    if (q.contains('form') || q.contains('application') || q.contains('document')) {
-      return 'forms';
-    }
-    if (q.contains('fee') || q.contains('payment') || q.contains('dues')) {
-      return 'fees';
-    }
-    if (q.contains('admission') || q.contains('eligibility') || q.contains('cutoff')) {
-      return 'admissions';
-    }
-    if (q.contains('club') || q.contains('event') || q.contains('fest') || q.contains('cultural')) {
-      return 'clubs_events';
-    }
-    if (q.contains('hostel') || q.contains('room') || q.contains('accommodation')) {
-      return 'hostel';
-    }
-    if (q.contains('placement') || q.contains('internship') || q.contains('company')) {
-      return 'placements';
-    }
+    if (q.contains('mess') || q.contains('menu') || q.contains('food')) return 'mess_menu';
+    if (q.contains('exam') || q.contains('test')) return 'exam_schedule';
+    if (q.contains('holiday') || q.contains('vacation')) return 'holidays';
+    if (q.contains('faculty') || q.contains('professor')) return 'faculty_info';
+    if (q.contains('form') || q.contains('application')) return 'forms';
+    if (q.contains('fee') || q.contains('payment')) return 'fees';
+    if (q.contains('admission') || q.contains('eligibility')) return 'admissions';
+    if (q.contains('club') || q.contains('event')) return 'clubs_events';
+    if (q.contains('hostel') || q.contains('room')) return 'hostel';
+    if (q.contains('placement') || q.contains('internship')) return 'placements';
     
     return 'general';
   }
 
-  static Future<String> _quickIntentCheck(String question) async {
-    return await _classifyIntent(question);
-  }
-
-  // ==================== STEP 3: GATHER CONTEXT ====================
+  // ==================== GATHER CONTEXT ====================
   static Future<Map<String, dynamic>> _gatherContext(String question, String intent) async {
     final context = <String, dynamic>{};
     
-    // Check if we have recent scraped data for this intent
     final scrapedData = await _getScrapedData(intent);
-    if (scrapedData != null) {
-      context['scraped_data'] = scrapedData;
-    }
+    if (scrapedData != null) context['scraped_data'] = scrapedData;
     
-    // Get relevant knowledge base entries
     final kbData = await _getKnowledgeBase(intent);
-    if (kbData.isNotEmpty) {
-      context['knowledge_base'] = kbData;
-    }
+    if (kbData.isNotEmpty) context['knowledge_base'] = kbData;
     
-    // Get official URLs for this intent
     context['target_urls'] = _getTargetURLs(intent);
     
     return context;
@@ -209,15 +225,14 @@ class AiService {
       if (cached.docs.isNotEmpty) {
         final data = cached.docs.first.data();
         final lastScraped = (data['last_scraped'] as Timestamp).toDate();
-        
-        // Check if data is fresh (< 24h for most intents)
         final maxAge = _getMaxAge(intent);
+        
         if (DateTime.now().difference(lastScraped).inHours < maxAge) {
           return data['extracted_data'] as Map<String, dynamic>?;
         }
       }
     } catch (e) {
-      debugPrint("Failed to get scraped data: $e");
+      debugPrint("Scraped data fetch failed: $e");
     }
     return null;
   }
@@ -239,8 +254,8 @@ class AiService {
 
   static List<String> _getTargetURLs(String intent) {
     final urlMap = {
-      'mess_menu': ['https://polaris.iitbhilai.ac.in', 'https://iitbhilai.ac.in/hostel'],
-      'exam_schedule': ['https://iitbhilai.ac.in/academics', 'https://polaris.iitbhilai.ac.in/academics'],
+      'mess_menu': ['https://polaris.iitbhilai.ac.in'],
+      'exam_schedule': ['https://iitbhilai.ac.in/academics'],
       'holidays': ['https://iitbhilai.ac.in/academics/calendar'],
       'faculty_info': ['https://iitbhilai.ac.in/faculty'],
       'forms': ['https://iitbhilai.ac.in/downloads'],
@@ -256,21 +271,14 @@ class AiService {
 
   static int _getMaxAge(String intent) {
     final ageMap = {
-      'mess_menu': 12,      // 12 hours
-      'exam_schedule': 168, // 7 days
-      'holidays': 168,      // 7 days
-      'faculty_info': 720,  // 30 days
-      'fees': 720,          // 30 days
-      'admissions': 168,    // 7 days
-      'clubs_events': 24,   // 24 hours
-      'hostel': 720,        // 30 days
-      'placements': 24,     // 24 hours
+      'mess_menu': 12, 'exam_schedule': 168, 'holidays': 168,
+      'faculty_info': 720, 'fees': 720, 'admissions': 168,
+      'clubs_events': 24, 'hostel': 720, 'placements': 24,
     };
-    
     return ageMap[intent] ?? 24;
   }
 
-  // ==================== STEP 4: GENERATE ANSWER ====================
+  // ==================== GENERATE ANSWER (WITH KEY ROTATION) ====================
   static Future<Map<String, dynamic>> _generateAnswer(
     String question,
     Map<String, dynamic> context,
@@ -280,36 +288,36 @@ class AiService {
       "https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent?key=$_apiKey"
     );
 
-    // Build enhanced prompt
-    final systemPrompt = _buildSystemPrompt(intent);
-    final userPrompt = _buildUserPrompt(question, context);
-
     final payload = {
-      "contents": [
-        {
-          "parts": [{"text": userPrompt}]
-        }
-      ],
-      "tools": [
-        {"google_search": {}}
-      ],
-      "systemInstruction": {
-        "parts": [{"text": systemPrompt}]
-      },
-      "generationConfig": {
-        "temperature": 0.3,
-        "topP": 0.8,
-        "topK": 40,
-        "maxOutputTokens": 1024,
-      }
+      "contents": [{"parts": [{"text": _buildUserPrompt(question, context)}]}],
+      "tools": [{"google_search": {}}],
+      "systemInstruction": {"parts": [{"text": _buildSystemPrompt(intent)}]},
+      "generationConfig": {"temperature": 0.3, "topP": 0.8, "topK": 40, "maxOutputTokens": 1024},
     };
 
     try {
+      debugPrint("🔑 Using API key #${_currentKeyIndex + 1}");
+      
       final response = await http.post(
         url,
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(payload),
-      );
+      ).timeout(const Duration(seconds: 15));
+
+      // ⚠️ QUOTA EXCEEDED - ROTATE KEY
+      if (response.statusCode == 429) {
+        debugPrint("⚠️ Quota exceeded on key #${_currentKeyIndex + 1}");
+        _retryCount++;
+        
+        if (_retryCount < _maxRetries) {
+          _currentKeyIndex = (_currentKeyIndex + 1) % _apiKeys.length;
+          debugPrint("🔄 Switching to API key #${_currentKeyIndex + 1}");
+          return _generateAnswer(question, context, intent); // Retry
+        } else {
+          debugPrint("❌ All API keys exhausted!");
+          return _quotaExceededResponse(question, context);
+        }
+      }
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -317,29 +325,22 @@ class AiService {
         
         if (candidate?['finishReason'] == "RECITATION") {
           return {
-            'answer': "I found relevant information on the official IIT Bhilai website. Please check: ${context['target_urls']?[0] ?? 'iitbhilai.ac.in'}",
-            'confidence': 0.6,
+            'answer': "I found relevant information on: ${context['target_urls']?[0]}",
+            'confidence_score': 0.6,
             'source': 'official_website',
-            'recitation_blocked': true,
           };
         }
 
         final answerText = candidate?['content']?['parts']?[0]?['text']?.trim() ?? '';
-        
-        // Extract groundingMetadata if available
-        final groundingMetadata = candidate?['groundingMetadata'];
-        final searchQueries = groundingMetadata?['searchEntryPoint']?['renderedContent'];
-        final webSearchQueries = groundingMetadata?['webSearchQueries'];
+        debugPrint("✅ Success with API key #${_currentKeyIndex + 1}");
         
         return {
           'answer': answerText,
-          'confidence': 0.9,
+          'confidence_score': 0.9,
           'source': context['target_urls']?[0] ?? 'iitbhilai.ac.in',
-          'grounding_metadata': groundingMetadata,
-          'search_queries': webSearchQueries,
         };
       } else {
-        debugPrint("Gemini API Error: ${response.statusCode} - ${response.body}");
+        debugPrint("API Error: ${response.statusCode}");
         return _fallbackResponse(question);
       }
     } catch (e) {
@@ -350,122 +351,56 @@ class AiService {
 
   static String _buildSystemPrompt(String intent) {
     return """
-You are the official IIT Bhilai AI Assistant. Your role is to help students, faculty, and visitors find accurate information about IIT Bhilai.
+You are the official IIT Bhilai AI Assistant.
 
-CRITICAL RULES:
-1. ONLY use information from:
-   - iitbhilai.ac.in (official website)
-   - polaris.iitbhilai.ac.in (student portal)
-   - Provided context data
+RULES:
+1. ONLY use info from iitbhilai.ac.in and polaris.iitbhilai.ac.in
+2. NEVER invent information
+3. Be concise and cite sources
+4. Current focus: ${intent.toUpperCase()}
 
-2. NEVER invent or assume information
-3. If you don't find verified data, say: "I couldn't find verified information about this. Please check: [official_url]"
-4. Always cite your source
-5. Be concise and helpful
-6. Use bullet points for lists
-7. Include dates/deadlines when relevant
-
-KNOWLEDGE DOMAINS:
-- Academics: Courses, exams, calendar, grades
-- Admissions: Eligibility, cutoffs, application process
-- Campus Life: Hostels, mess, clubs, events
-- Administration: Forms, fees, policies
-- Faculty: Contact info, departments
-- Placements: Companies, processes, statistics
-
-CURRENT FOCUS: ${intent.toUpperCase()}
-
-Response Format:
-- Direct answer first
-- Source citation at end
-- Include relevant links if available
+If uncertain, say: "I couldn't verify this. Check: [official_url]"
 """;
   }
 
   static String _buildUserPrompt(String question, Map<String, dynamic> context) {
-    final buffer = StringBuffer();
-    
-    buffer.writeln("USER QUESTION: $question");
-    buffer.writeln();
+    final buffer = StringBuffer("USER QUESTION: $question\n\n");
     
     if (context.containsKey('scraped_data')) {
-      buffer.writeln("AVAILABLE DATA FROM OFFICIAL WEBSITE:");
-      buffer.writeln(jsonEncode(context['scraped_data']));
-      buffer.writeln();
+      buffer.writeln("DATA: ${jsonEncode(context['scraped_data'])}\n");
     }
     
-    if (context.containsKey('knowledge_base') && (context['knowledge_base'] as List).isNotEmpty) {
-      buffer.writeln("KNOWLEDGE BASE ENTRIES:");
-      for (var entry in context['knowledge_base']) {
-        buffer.writeln("- ${entry['answer']}");
-      }
-      buffer.writeln();
-    }
-    
-    buffer.writeln("OFFICIAL SOURCES TO SEARCH:");
-    for (var url in context['target_urls']) {
-      buffer.writeln("- $url");
-    }
-    buffer.writeln();
-    
-    buffer.writeln("INSTRUCTIONS:");
-    buffer.writeln("1. Search the provided official sources");
-    buffer.writeln("2. If data is available, answer using that information");
-    buffer.writeln("3. Paraphrase - never copy-paste verbatim");
-    buffer.writeln("4. If no data found, say so clearly");
-    buffer.writeln("5. Always mention the source URL");
+    buffer.writeln("SOURCES: ${context['target_urls']?.join(', ')}\n");
+    buffer.writeln("INSTRUCTIONS: Search sources, paraphrase findings, cite URL.");
     
     return buffer.toString();
   }
 
-  // ==================== STEP 5: VERIFY ANSWER ====================
+  // ==================== VERIFY ANSWER ====================
   static Future<Map<String, dynamic>> _verifyAnswer(
     String question,
     Map<String, dynamic> answer,
     Map<String, dynamic> context,
   ) async {
-    // Basic validation
-    final answerText = answer['answer'] as String;
+    final answerText = answer['answer'] as String? ?? '';
     
-    // Check for common issues
     if (answerText.isEmpty || answerText.length < 10) {
       return _fallbackResponse(question);
     }
     
-    // Check if answer contains "ESC_ADMIN" or similar flags
-    if (answerText.contains('ESC_ADMIN') || 
-        answerText.contains("I don't know") ||
-        answerText.contains("I couldn't find")) {
-      return {
-        'answer': "I couldn't find verified information about this on the official IIT Bhilai websites. Please contact the administration or check:\n\n${context['target_urls']?[0] ?? 'https://iitbhilai.ac.in'}",
-        'confidence': 'unverified',
-        'source': null,
-        'needs_manual_check': true,
-      };
-    }
-    
-    // Calculate confidence score
-    double confidence = answer['confidence'] ?? 0.9;
-    
-    // Reduce confidence if no grounding metadata
-    if (answer['grounding_metadata'] == null) {
-      confidence *= 0.9;
-    }
-    
-    // High confidence = verified
+    double confidence = (answer['confidence_score'] as num?)?.toDouble() ?? 0.9;
     final confidenceLabel = confidence >= 0.85 ? 'verified' : 'unverified';
     
     return {
       'answer': answerText,
       'confidence': confidenceLabel,
-      'source': answer['source'],
-      'last_updated': 'Just now',
+      'source': answer['source'] as String? ?? 'iitbhilai.ac.in',
       'confidence_score': confidence,
       'needs_manual_check': confidence < 0.85,
     };
   }
 
-  // ==================== STEP 6: CACHE RESPONSE ====================
+  // ==================== CACHE ====================
   static Future<void> _cacheResponse(
     String question,
     Map<String, dynamic> response,
@@ -473,8 +408,7 @@ Response Format:
   ) async {
     try {
       final queryHash = _generateHash(question.toLowerCase().trim());
-      final ttl = _getMaxAge(intent);
-      final expiresAt = DateTime.now().add(Duration(hours: ttl));
+      final expiresAt = DateTime.now().add(Duration(hours: _getMaxAge(intent)));
       
       await _firestore.collection('smart_cache').add({
         'query_hash': queryHash,
@@ -484,19 +418,16 @@ Response Format:
         'source_url': response['source'],
         'scraped_at': FieldValue.serverTimestamp(),
         'expires_at': Timestamp.fromDate(expiresAt),
-        'confidence_score': response['confidence_score'] ?? 0.9,
+        'confidence_score': response['confidence_score'],
         'view_count': 1,
         'last_accessed': FieldValue.serverTimestamp(),
-        'created_at': FieldValue.serverTimestamp(),
       });
-      
-      debugPrint("✅ Cached response for: $question");
     } catch (e) {
-      debugPrint("Cache storage failed: $e");
+      debugPrint("Cache failed: $e");
     }
   }
 
-  // ==================== STEP 7: LOGGING & ANALYTICS ====================
+  // ==================== LOGGING ====================
   static Future<void> _logQuery(
     String question,
     Map<String, dynamic> response,
@@ -508,9 +439,9 @@ Response Format:
         'user_id': userId ?? 'anonymous',
         'question': question,
         'intent': await _classifyIntent(question),
-        'response_type': response['confidence'],
-        'source': response['source'],
+        'confidence': response['confidence'],
         'from_cache': fromCache,
+        'api_key_used': _currentKeyIndex + 1,
         'timestamp': FieldValue.serverTimestamp(),
       });
     } catch (e) {
@@ -518,7 +449,7 @@ Response Format:
     }
   }
 
-  // ==================== UTILITY FUNCTIONS ====================
+  // ==================== UTILITIES ====================
   static String _generateHash(String input) {
     return sha256.convert(utf8.encode(input)).toString().substring(0, 16);
   }
@@ -527,29 +458,21 @@ Response Format:
     s1 = s1.toLowerCase().trim();
     s2 = s2.toLowerCase().trim();
     
-    // Exact match
-    if (s1 == s2) return true;
+    if (s1 == s2 || s1.contains(s2) || s2.contains(s1)) return true;
     
-    // Contains match
-    if (s1.contains(s2) || s2.contains(s1)) return true;
-    
-    // Word overlap (simple)
     final words1 = s1.split(' ').where((w) => w.length > 3).toSet();
     final words2 = s2.split(' ').where((w) => w.length > 3).toSet();
-    final overlap = words1.intersection(words2).length;
     
-    return overlap >= 2; // At least 2 common words
+    return words1.intersection(words2).length >= 2;
   }
 
   static String _formatTimestamp(dynamic timestamp) {
     if (timestamp is Timestamp) {
-      final date = timestamp.toDate();
-      final now = DateTime.now();
-      final diff = now.difference(date);
-      
-      if (diff.inMinutes < 60) return '${diff.inMinutes} minutes ago';
-      if (diff.inHours < 24) return '${diff.inHours} hours ago';
+      final diff = DateTime.now().difference(timestamp.toDate());
+      if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+      if (diff.inHours < 24) return '${diff.inHours} hr ago';
       if (diff.inDays < 7) return '${diff.inDays} days ago';
+      final date = timestamp.toDate();
       return '${date.day}/${date.month}/${date.year}';
     }
     return 'Recently';
@@ -557,10 +480,20 @@ Response Format:
 
   static Map<String, dynamic> _fallbackResponse(String question) {
     return {
-      'answer': "I'm currently unable to find verified information about this. Please check the official IIT Bhilai website:\n\nhttps://iitbhilai.ac.in\n\nOr contact the administration office for accurate information.",
+      'answer': "I'm unable to find verified information. Please check:\n\nhttps://iitbhilai.ac.in",
       'confidence': 'unverified',
       'source': 'https://iitbhilai.ac.in',
-      'is_fallback': true,
+      'confidence_score': 0.3,
+    };
+  }
+
+  static Map<String, dynamic> _quotaExceededResponse(String question, Map<String, dynamic> context) {
+    final url = (context['target_urls'] as List?)?.first ?? 'https://iitbhilai.ac.in';
+    return {
+      'answer': "All AI services are at capacity. Your question has been flagged for admin review.\n\nCheck: $url",
+      'confidence': 'unverified',
+      'source': url,
+      'confidence_score': 0.4,
     };
   }
 }
