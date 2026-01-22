@@ -5,7 +5,7 @@ import '../services/ai_service.dart';
 
 class StudentChatScreen extends StatefulWidget {
   final String? initialQuery; // ← ADD THIS
-  
+
   const StudentChatScreen({Key? key, this.initialQuery}) : super(key: key);
 
   @override
@@ -27,7 +27,7 @@ class _StudentChatScreenState extends State<StudentChatScreen> {
     _currentUserId = user?.uid;
     _currentUserEmail = user?.email;
     _addWelcomeMessage();
-    
+
     // ← ADD THIS: Auto-send initial query if provided
     if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -39,7 +39,8 @@ class _StudentChatScreenState extends State<StudentChatScreen> {
   void _addWelcomeMessage() {
     setState(() {
       _messages.add({
-        'text': '👋 Hello! I\'m your IIT Bhilai AI Assistant.\n\nAsk me about:\n• Mess menu\n• Exam schedules\n• Faculty info\n• Forms & documents\n• Campus events\n• And more!',
+        'text':
+            '👋 Hello! I\'m your IIT Bhilai AI Assistant.\n\nAsk me about:\n• Mess menu\n• Exam schedules\n• Faculty info\n• Forms & documents\n• Campus events\n• And more!',
         'isUser': false,
         'timestamp': DateTime.now(),
       });
@@ -70,7 +71,9 @@ class _StudentChatScreenState extends State<StudentChatScreen> {
 
       // Safe type conversion
       final answerText = _safeString(response['answer']);
-      final confidence = _safeString(response['confidence']) ?? 'unverified';
+      final confidence = _safeString(response['confidence']).isEmpty
+          ? 'unverified'
+          : _safeString(response['confidence']);
       final source = _safeString(response['source']);
       final fromCache = response['from_cache'] == true;
 
@@ -87,7 +90,8 @@ class _StudentChatScreenState extends State<StudentChatScreen> {
       });
 
       // Save to admin dashboard if unverified
-      if (confidence == 'unverified' || response['needs_manual_check'] == true) {
+      if (confidence == 'unverified' ||
+          response['needs_manual_check'] == true) {
         await _flagForAdmin(question, answerText);
       }
 
@@ -229,9 +233,12 @@ class _StudentChatScreenState extends State<StudentChatScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    confidence == 'verified' ? Icons.verified : Icons.info_outline,
+                    confidence == 'verified'
+                        ? Icons.verified
+                        : Icons.info_outline,
                     size: 14,
-                    color: confidence == 'verified' ? Colors.green : Colors.orange,
+                    color:
+                        confidence == 'verified' ? Colors.green : Colors.orange,
                   ),
                   const SizedBox(width: 4),
                   Text(
